@@ -10,6 +10,21 @@ enum class GemmType {
     GroupedMasked
 };
 
+/*
+ * GroupedMasked GEMM with 2D grouped_layout:
+ * 
+ * grouped_layout is a 2D array with shape [2, kNumGroups]:
+ * - grouped_layout[0*kNumGroups + i] = start row of group i
+ * - grouped_layout[1*kNumGroups + i] = end row of group i
+ * - Valid row range for group i: [start_row, end_row)
+ * 
+ * Example usage:
+ * For 3 groups with different row ranges:
+ * Group 0: rows [0, 100)     -> grouped_layout[0] = 0,   grouped_layout[3] = 100
+ * Group 1: rows [150, 300)   -> grouped_layout[1] = 150, grouped_layout[4] = 300  
+ * Group 2: rows [400, 500)   -> grouped_layout[2] = 400, grouped_layout[5] = 500
+ */
+
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "cppcoreguidelines-pro-type-member-init"
 template <GemmType kGemmType,
@@ -34,8 +49,24 @@ struct Scheduler {
     // Only used for masked layout
     uint32_t curr_group_idx, curr_cumsum;
 
+    // Helper functions for 2D grouped_layout access
+    __device__ __forceinline__ uint32_t get_group_start_row(uint32_t group_idx) const {
+        return static_cast<uint32_t>(__ldg(grouped_layout + group_idx));
+    }
+    
+    __device__ __forceinline__ uint32_t get_group_end_row(uint32_t group_idx) const {
+        return static_cast<uint32_t>(__ldg(grouped_layout + kNumGroups + group_idx));
+    }
+    
+    __device__ __forceinline__ uint32_t get_group_num_rows(uint32_t group_idx) const {
+        return get_group_end_row(group_idx) - get_group_start_row(group_idx);
+    }
+
     __device__ __forceinline__ explicit Scheduler(const uint32_t& shape_m,
                                                   int* grouped_layout = nullptr) {
+        // grouped_layout: 2D array with shape [2, kNumGroups]
+        // grouped_layout[0][i] = start row of group i
+        // grouped_layout[1][i] = end row of group i
         num_aligned_m_blocks = ceil_div(shape_m, BLOCK_M);
         if constexpr (kGemmType == GemmType::Normal) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
@@ -55,7 +86,11 @@ struct Scheduler {
         } else if constexpr (kGemmType == GemmType::GroupedContiguous) {
             return __ldg(grouped_layout + m_offset + m_block_idx * BLOCK_M) >= 0;
         } else if constexpr (kGemmType == GemmType::GroupedMasked) {
-            return m_offset + m_block_idx * BLOCK_M < __ldg(grouped_layout + curr_group_idx);
+            // 检查当前处理的行是否在有效区间内
+            uint32_t current_row = m_offset + m_block_idx * BLOCK_M;
+            uint32_t group_start = get_group_start_row(curr_group_idx);
+            uint32_t group_end = get_group_end_row(curr_group_idx);
+            return current_row >= group_start && current_row < group_end;
         }
     }
 
@@ -119,7 +154,9 @@ struct Scheduler {
             auto offset = kIgnoreGroupedForGroupedContiguous ? 0 : __ldg(grouped_layout + m_block_idx * BLOCK_M);
             return offset * shape_dim + block_idx * block_size;
         } else if constexpr (kGemmType == GemmType::GroupedMasked) {
-            return curr_group_idx * shape_dim + block_idx * block_size;
+            // 使用当前组的起始行作为偏移
+            uint32_t group_offset = get_group_start_row(curr_group_idx);
+            return group_offset * shape_dim + block_idx * block_size;
         }
     }
 
@@ -134,7 +171,9 @@ struct Scheduler {
                     return false;
 
                 // Within the current group
-                num_m_blocks = ceil_div(static_cast<uint32_t>(__ldg(grouped_layout + curr_group_idx)), BLOCK_M);
+                // 计算当前组的有效行数，然后转换为block数
+                uint32_t group_num_rows = get_group_num_rows(curr_group_idx);
+                num_m_blocks = ceil_div(group_num_rows, BLOCK_M);
                 auto current_m_block_cumsum = curr_cumsum + num_m_blocks;
                 if (next_block_idx < current_m_block_cumsum * kNumNBlocks)
                     break;

@@ -37,7 +37,7 @@ template <uint32_t SHAPE_N, uint32_t SHAPE_K,
           uint32_t kNumTMAMulticast, bool kIsTMAMulticastOnA,
           GemmType kGemmType>
 __global__ void __launch_bounds__(get_num_threads_per_sm<kNumTMAThreads, kNumMathThreadsPerGroup>(BLOCK_M), 1)
-fp8_gemm_kernel(float* scales_b, int* grouped_layout,
+fp8_gemm_kernel(float* scales_b, int* grouped_layout,  // 2D array [2, kNumGroups]
                 uint32_t shape_m,
                 const __grid_constant__ CUtensorMap tensor_map_a,
                 const __grid_constant__ CUtensorMap tensor_map_b,
