@@ -245,7 +245,7 @@ class FP8SignalGemmRuntime(Runtime):
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
-#include <deep_gemm/fp8_sliding_gemm.cuh>
+#include <deep_gemm/fp8_signal_gemm.cuh>
 
 using namespace deep_gemm;
 
