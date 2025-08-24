@@ -325,7 +325,6 @@ static void __instantiate_kernel() {{
             ctypes.c_void_p,
             ctypes.c_void_p,
             ctypes.c_uint32,
-            ctypes.c_uint32,
             None,
             None,
             None,
