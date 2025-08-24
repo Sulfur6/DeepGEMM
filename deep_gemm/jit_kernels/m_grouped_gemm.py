@@ -4,11 +4,13 @@ from typing import Tuple
 from ..jit import build
 from .gemm import get_best_configs
 from .runtime import (
-    FP8GemmRuntime, GemmType,
+    FP8GemmRuntime, FP8SignalGemmRuntime, GemmType,
     make_2d_tma_a_desc, make_2d_tma_b_desc,
     make_2d_tma_d_desc, make_2d_tma_scales_desc)
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
 
+# 最小块大小常量
+MIN_BLOCK_M = 64
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(lhs: Tuple[torch.Tensor, torch.Tensor],
                                               rhs: Tuple[torch.Tensor, torch.Tensor],
@@ -203,3 +205,130 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked(lhs: Tuple[torch.Tensor, torch.Tensor]
     code = FP8GemmRuntime.generate(kwargs)
     runtime = build('m_grouped_gemm_fp8_fp8_bf16_nt', code, FP8GemmRuntime, kwargs)
     runtime(**kwargs)
+
+
+def m_grouped_gemm_fp8_fp8_bf16_nt_signal(lhs: Tuple[torch.Tensor, torch.Tensor],
+                                          rhs: Tuple[torch.Tensor, torch.Tensor],
+                                          out: torch.Tensor,
+                                          masked_m: torch.Tensor, 
+                                          signal: torch.Tensor,
+                                          expected_m: int,
+                                          gemm_start_event: torch.cuda.Event = None,
+                                          invalid_sm_count: int = 3) -> Tuple[torch.Tensor, int, int]:
+    """
+    Perform a grouped GEMM (masked format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
+
+    Requirements:
+        LHS, RHS, RHS scaling factors, and output tensors must be in contiguous format.
+        RHS and RHS scaling factors are required to be transposed.
+        The LHS scaling tensor requires a TMA-aligned transposed format, if your input does not match the requirement,
+            this function will do a transposing with a set of slow PyTorch operations.
+        Moreover, this alignment requirement is different with the contiguous-format kernel, as we require that each batch
+            should be separately transposed.
+
+    Arguments:
+        lhs: the first element is an FP8 tensor (typed `torch.float8_e4m3fn`) of shape `[num_groups, m_max, k]`,
+             the second element is an FP32 1x128 scaling tensor for LHS of shape `[num_groups, m_max, ⌈k / 128⌉]`.
+        rhs: the first element is an FP8 tensor (typed `torch.float8_e4m3fn`) of shape `[num_groups, n, k]`.
+             The second element is an FP32 128x128 scaling tensor for RHS of shape `[num_groups, ⌈n / 128⌉, ⌈k / 128⌉]`.
+        out: the BF16 output tensor of shape `[num_groups, m_max, n]`, representing the result.
+        masked_m: a tensor of shape `[num_groups]`, `masked_m[i]` records actual rows of the `lhs[i]` matrix to compute
+            in the i-th group.
+        signal: a pre-allocated signal buffer tensor of shape `[num_groups * ceil_div(m_max, MIN_BLOCK_M)]` of type int32,
+                stores the signal of each block. Should be created externally with size num_local_experts * ceil_div(m, MIN_BLOCK_M).
+        expected_m: a value hint (which is a value on CPU) for the M expectation of each batch,
+            correctly setting this value may lead to better performance.
+
+    Returns:
+        block_m: the block size of M dimension.
+        threshold: the threshold of the signal, which is the number of blocks in the N dimension.
+        
+    Note:
+        The signal tensor is modified in-place and does not need to be returned.
+    """
+    lhs, lhs_scales = lhs
+    rhs, rhs_scales = rhs
+    num_groups, m, k = lhs.shape
+    num_groups_, n, k_ = rhs.shape
+    num_groups__, m_, n_ = out.shape
+    num_groups___ = masked_m.numel()
+
+    # Type and shape checks
+    assert num_groups == num_groups_ == num_groups__ == num_groups___
+    assert m == m_ and n == n_ and k == k_
+    assert expected_m > 0 and m > 0 and n > 0 and k > 0 and num_groups > 0
+    assert lhs_scales.shape == (num_groups, m, ceil_div(k, 128))
+    assert rhs_scales.shape == (num_groups, ceil_div(n, 128), ceil_div(k, 128))
+    assert lhs.dtype == torch.float8_e4m3fn and lhs_scales.dtype == torch.float32
+    assert rhs.dtype == torch.float8_e4m3fn and rhs_scales.dtype == torch.float32
+    assert out.dtype == torch.bfloat16
+    assert masked_m.dtype == torch.int32
+    assert lhs.is_contiguous() and rhs.is_contiguous()
+    assert out.is_contiguous() and masked_m.is_contiguous()
+    
+    # Signal check
+    expected_signal_size = num_groups * ceil_div(m, MIN_BLOCK_M)
+    assert signal.dtype == torch.int32, f"signal buffer should be int32, but got {signal.dtype}"
+    assert signal.numel() == expected_signal_size, f"the size of signal buffer should be {expected_signal_size}, but got {signal.numel()}"
+    assert signal.is_contiguous(), "signal buffer must be contiguous"
+
+    lhs_scales = get_col_major_tma_aligned_tensor(lhs_scales)
+    assert rhs_scales.is_contiguous()
+
+    # Auto-tuning with compilation
+    num_sms = get_num_sms() - invalid_sm_count
+    num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
+        expected_m, n, k, num_groups, num_sms, is_grouped_masked=True)
+
+    threshold = ceil_div(n, block_n)
+    
+    actual_signal_size = num_groups * ceil_div(m, block_m)
+    assert signal.numel() >= actual_signal_size
+
+    # Extra checks for TMA store
+    if num_groups > 1 and m > block_m:
+        assert m % block_m == 0, f'For masked grouped GEMM, shape M should be multiple of the block M (current block M: {block_m})'
+
+    block_k = 128
+    num_tma_threads = 128
+    num_math_threads_per_group = 128
+
+    tensor_map_a = make_2d_tma_a_desc(GemmType.GroupedMasked, lhs, m, k, k, block_m, block_k, num_groups)
+    tensor_map_b = make_2d_tma_b_desc(GemmType.GroupedMasked, rhs, n, k, k, block_n, block_k, num_groups)
+    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedMasked, out, m, n, n, block_m, block_n, num_groups, smem_config[1])
+    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedMasked, lhs_scales, m, k, block_m, block_k, num_groups)
+
+    kwargs = {
+        # Templated arguments
+        'NUM_TMA_THREADS': num_tma_threads,
+        'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
+        'M': m, 'N': n, 'K': k,
+        'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
+        'SWIZZLE_D_MODE': smem_config[1],
+        'BLOCK_N_PADDING': smem_config[2],
+        'NUM_GROUPS': num_groups,
+        'NUM_STAGES': num_stages,
+        'NUM_TMA_MULTICAST': tma_multicast_config[0],
+        'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
+        'GEMM_TYPE': GemmType.GroupedMasked,
+        # Runtime arguments
+        'SCALES_B': rhs_scales,
+        'SIGNAL': signal,
+        'GROUPED_LAYOUT': masked_m,
+        'NUM_SMS': num_sms,
+        'SMEM_SIZE': smem_config[0],
+        'TENSOR_MAP_A': tensor_map_a,
+        'TENSOR_MAP_B': tensor_map_b,
+        'TENSOR_MAP_SCALES_A': tensor_map_scales_a,
+        'TENSOR_MAP_D': tensor_map_d,
+        'STREAM': torch.cuda.current_stream().cuda_stream,
+        'DEVICE_INDEX': out.device.index,
+    }
+
+    code = FP8SignalGemmRuntime.generate(kwargs)
+    runtime = build('m_grouped_signal_gemm_fp8_fp8_bf16_nt', code, FP8SignalGemmRuntime, kwargs)
+    if gemm_start_event:
+        gemm_start_event.record()
+    runtime(**kwargs)
+
+    return block_m, threshold
