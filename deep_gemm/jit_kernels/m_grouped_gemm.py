@@ -213,7 +213,6 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_signal(lhs: Tuple[torch.Tensor, torch.Tensor]
                                           masked_m: torch.Tensor, 
                                           signal: torch.Tensor,
                                           expected_m: int,
-                                          gemm_start_event: torch.cuda.Event = None,
                                           invalid_sm_count: int = 3) -> Tuple[torch.Tensor, int, int]:
     """
     Perform a grouped GEMM (masked format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
@@ -327,8 +326,6 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_signal(lhs: Tuple[torch.Tensor, torch.Tensor]
 
     code = FP8SignalGemmRuntime.generate(kwargs)
     runtime = build('m_grouped_signal_gemm_fp8_fp8_bf16_nt', code, FP8SignalGemmRuntime, kwargs)
-    if gemm_start_event:
-        gemm_start_event.record()
     runtime(**kwargs)
 
     return block_m, threshold
