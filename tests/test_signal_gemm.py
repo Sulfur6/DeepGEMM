@@ -95,7 +95,9 @@ def test_m_grouped_gemm_signal() -> None:
             # Test correctness
             for i in range(2):
                 x_fp8, y_fp8, masked_m, out, ref_out = construct_masked_grouped(num_groups, max_m, expected_m_per_group, k, n)
-                deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_signal(x_fp8, y_fp8, out, masked_m, expected_m_per_group)
+                max_signal_size = num_groups * ceil_div(max_m, 64)
+                combine_signal = torch.zeros(max_signal_size, dtype=torch.int32, device='cuda')
+                deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_signal(x_fp8, y_fp8, out, masked_m, combine_signal, expected_m_per_group)
                 for j in range(num_groups):
                     diff = calc_diff(out[j, :masked_m[j].item()], ref_out[j, :masked_m[j].item()])
                     assert diff < 0.001, f'{expected_m_per_group=}, {k=}, {n=}, {j=}, masked_m={masked_m[j]}, {num_groups=}, {diff:.5f}'
