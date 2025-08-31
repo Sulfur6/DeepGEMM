@@ -100,3 +100,16 @@ def test_m_grouped_gemm_signal() -> None:
                     diff = calc_diff(out[j, :masked_m[j].item()], ref_out[j, :masked_m[j].item()])
                     assert diff < 0.001, f'{expected_m_per_group=}, {k=}, {n=}, {j=}, masked_m={masked_m[j]}, {num_groups=}, {diff:.5f}'
     print()
+
+
+if __name__ == '__main__':
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.manual_seed(0)
+    random.seed(0)
+
+    print('Library path:')
+    print(f' > {deep_gemm.__path__}\n')
+
+    test_m_grouped_gemm_masked()
+    test_m_grouped_gemm_signal()
