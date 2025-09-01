@@ -147,6 +147,11 @@ def get_best_configs(m: int, n: int, k: int, num_groups: int, num_sms: int,
     num_min_sms = ceil_div(num_min_sms, best_tma_multicast_config[0]) * best_tma_multicast_config[0]
     assert num_min_sms <= num_sms
 
+    print(f'  m: {m}, n: {n}, k: {k}')
+    print(f'  num_sms: {num_sms}, num_min_sms: {num_min_sms}, num_waves: {num_waves}')
+    print(f'  Auto-tuning results: {num_min_sms} SMs, block_m={best_block_m}, block_n={best_block_n}, ')
+    print(f'  Best configurations: num_stages={best_num_stages}, tma_multicast_config={best_tma_multicast_config}, smem_config={best_smem_config}')
+
     return num_min_sms, best_block_m, best_block_n, best_num_stages, best_tma_multicast_config, best_smem_config
 
 
