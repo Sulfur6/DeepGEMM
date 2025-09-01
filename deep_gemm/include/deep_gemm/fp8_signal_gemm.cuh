@@ -433,9 +433,11 @@ fp8_signal_gemm_kernel(float* scales_b, int* grouped_layout, int32_t* signal, ui
                                               scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx));
                 cute::tma_store_arrive();
             }
-            __syncwarp();
-
+            if (threadIdx.x < BLOCK_N / TMA_D_BLOCK_N) {
+                cute::tma_store_wait<0>();
+            }
             group.sync();
+            __threadfence();  
 
             if (threadIdx.x == 0) {
                 atomicAdd(signal + scheduler.curr_group_idx * ceil_div(shape_m, BLOCK_M) + m_block_idx, 1);
