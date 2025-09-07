@@ -179,7 +179,7 @@ static std::optional<std::pair<int, int>> m_grouped_fp8_gemm_nt_masked(const std
                                          const bool& disable_ue8m0_cast,
                                          const int& max_block_n,
                                          const bool& enable_overlap,
-                                         const std::optional<torch::Tensor>& signal) {
+                                         const c10::optional<torch::Tensor>& signal) {
     // Shape must be `[G, M, K] @ [G, N, K].mT`
     const auto& major_a = get_major_type_ab(a.first);
     const auto& major_b = get_major_type_ab(b.first);

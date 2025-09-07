@@ -195,7 +195,7 @@ static std::optional<std::pair<int, int>> sm90_m_grouped_fp8_gemm_masked_1d2d(co
                                                 const std::string& compiled_dims,
                                                 const int& max_block_n,
                                                 const bool& enable_overlap,
-                                                const std::optional<torch::Tensor>& signal) {
+                                                const c10::optional<torch::Tensor>& signal) {
     const auto& aligned_k = align(k, 128);
     DG_HOST_ASSERT(d.scalar_type() == torch::kBFloat16);
     DG_HOST_ASSERT(major_a == cute::UMMA::Major::K and major_b == cute::UMMA::Major::K);
