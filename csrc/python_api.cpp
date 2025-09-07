@@ -135,8 +135,17 @@ void m_grouped_fp8_gemm_nn_contiguous_wrapper(const torch::Tensor& a_val, const 
     deep_gemm::gemm::m_grouped_fp8_gemm_nn_contiguous({a_val, a_scale}, {b_val, b_scale}, d, m_indices, to_recipe_tuple(recipe), compiled_dims, disable_ue8m0_cast);
 }
 
-std::optional<std::pair<int, int>> m_grouped_fp8_gemm_nt_masked_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, const torch::Tensor& masked_m, int64_t expected_m, const c10::optional<c10::IntArrayRef>& recipe, const std::string& compiled_dims, bool disable_ue8m0_cast, int32_t max_block_n, bool enable_overlap, const c10::optional<torch::Tensor>& signal) {
-    return deep_gemm::gemm::m_grouped_fp8_gemm_nt_masked({a_val, a_scale}, {b_val, b_scale}, d, masked_m, expected_m, to_recipe_tuple(recipe), compiled_dims, disable_ue8m0_cast, max_block_n, enable_overlap, signal);
+c10::optional<std::tuple<int64_t, int64_t>> m_grouped_fp8_gemm_nt_masked_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, const torch::Tensor& masked_m, int64_t expected_m, const c10::optional<c10::IntArrayRef>& recipe, const std::string& compiled_dims, bool disable_ue8m0_cast, int64_t max_block_n, bool enable_overlap, const c10::optional<torch::Tensor>& signal) {
+    auto result = deep_gemm::gemm::m_grouped_fp8_gemm_nt_masked({a_val, a_scale}, {b_val, b_scale}, d, masked_m, expected_m, to_recipe_tuple(recipe), compiled_dims, disable_ue8m0_cast, max_block_n, enable_overlap, signal);
+
+    if (!result.has_value()) { // 假设 result 是 std::optional
+        return c10::nullopt;
+    }
+
+    return std::make_tuple(
+        static_cast<int64_t>(result->first), 
+        static_cast<int64_t>(result->second)
+    );
 }
 
 void k_grouped_fp8_gemm_tn_contiguous_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, c10::List<int64_t> ks, const torch::Tensor& ks_tensor, const c10::optional<torch::Tensor>& c, c10::IntArrayRef recipe, const std::string& compiled_dims) {
@@ -322,7 +331,7 @@ TORCH_LIBRARY(deep_gemm, m) {
                                                              const c10::optional<c10::IntArrayRef>& recipe,
                                                              const std::string& compiled_dims,
                                                              bool disable_ue8m0_cast,
-                                                             int32_t max_block_n,
+                                                             int64_t max_block_n,
                                                              bool enable_overlap,
                                                              const c10::optional<torch::Tensor>& signal) {
         auto [a_val, a_scale] = parse_tensor_or_tuple(a_input);
