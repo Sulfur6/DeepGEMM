@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cuda.h>
-#include <torch/python.h>
 
 #include "../../utils/math.hpp"
 #include "../../utils/exception.hpp"
@@ -169,5 +168,11 @@ static CUtensorMap make_tma_sf_desc(const cute::UMMA::Major& major,
                             shape_mn,
                             swizzle_mode);
 }
+
+#define MAYBE_LAUNCH(EXPR) do {                     \
+    if (device_runtime->get_compile_mode() == 0) {  \
+        (EXPR);                                     \
+    }                                               \
+} while (0)
 
 } // namespace deep_gemm

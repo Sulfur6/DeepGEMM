@@ -1,7 +1,5 @@
 #pragma once
 
-#include <torch/python.h>
-
 #include "../../jit/compiler.hpp"
 #include "../../jit/device_runtime.hpp"
 #include "../../jit/kernel_runtime.hpp"
@@ -137,7 +135,7 @@ static void sm100_bf16_gemm(const torch::Tensor& a,
     };
     const auto& code = SM100BF16GemmRuntime::generate(args);
     const auto& runtime = compiler->build("sm100_bf16_gemm", code);
-    SM100BF16GemmRuntime::launch(runtime, args);
+    MAYBE_LAUNCH(SM100BF16GemmRuntime::launch(runtime, args));
 }
 
 } // namespace deep_gemm
