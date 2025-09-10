@@ -63,9 +63,9 @@ def parse_fp8_gemm_info_from_trace(trace_path: str):
                 if current_arg:
                     template_args.append(current_arg.strip())
                 
-                if len(template_args) > 6:
+                if len(template_args) > 5:
                     try:
-                        block_n = int(template_args[6].replace('u', ''))
+                        block_n = int(template_args[5].replace('u', ''))
                     except (ValueError, IndexError):
                         block_n = None
 
