@@ -103,7 +103,13 @@ def test_m_grouped_gemm_masked(max_block_n=256) -> None:
 
         # noinspection PyShadowingNames
         def test_func():
-            deep_gemm.m_grouped_fp8_gemm_nt_masked(a, b, d, masked_m, expected_m_per_group, disable_ue8m0_cast=disable_ue8m0_cast, enable_overlap=enable_overlap, signal=signal, max_block_n=max_block_n)
+            if not enable_overlap:
+                deep_gemm.m_grouped_fp8_gemm_nt_masked(a, b, d, masked_m, expected_m_per_group, disable_ue8m0_cast=disable_ue8m0_cast, enable_overlap=enable_overlap, signal=signal, max_block_n=max_block_n)
+            else:
+                origin_sms = deep_gemm.get_num_sms()
+                deep_gemm.set_num_sms(origin_sms - 3)
+                deep_gemm.m_grouped_fp8_gemm_nt_masked(a, b, d, masked_m, expected_m_per_group, disable_ue8m0_cast=disable_ue8m0_cast, enable_overlap=enable_overlap, signal=signal, max_block_n=max_block_n)
+                deep_gemm.set_num_sms(origin_sms)
 
         # --- MODIFICATION STARTS HERE ---
 
