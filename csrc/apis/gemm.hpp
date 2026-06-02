@@ -17,7 +17,10 @@ static void fp8_gemm_nt(const std::pair<torch::Tensor, torch::Tensor>& a,
                         const std::optional<torch::Tensor>& c,
                         std::optional<std::tuple<int, int, int>> recipe,
                         const std::string& compiled_dims,
-                        const bool& disable_ue8m0_cast) {
+                        const bool& disable_ue8m0_cast,
+                        const int& max_block_n = 256,
+                        const bool& enable_overlap = false,
+                        const c10::optional<torch::Tensor>& signal = std::nullopt) {
     // Shape must be `[M, K] @ [N, K].T`
     const auto& major_a = get_major_type_ab(a.first);
     const auto& major_b = get_major_type_ab(b.first);
@@ -46,6 +49,12 @@ static void fp8_gemm_nt(const std::pair<torch::Tensor, torch::Tensor>& a,
         DG_HOST_ASSERT(c.value().scalar_type() == torch::kFloat);
     }
 
+    if (enable_overlap) {
+        DG_HOST_ASSERT(signal.has_value());
+        DG_HOST_ASSERT(signal.value().is_contiguous());
+        DG_HOST_ASSERT(signal.value().scalar_type() == torch::kInt32);
+    }
+
     // Do nothing if the problem is empty
     if (m == 0)
         return;
@@ -63,7 +72,7 @@ static void fp8_gemm_nt(const std::pair<torch::Tensor, torch::Tensor>& a,
         if (std::get<1>(recipe.value()) == 1) {
             sm90_fp8_gemm_1d1d(a.first, sfa, b.first, sfb, c, d, m, n, k, major_a, major_b, compiled_dims);
         } else {
-            sm90_fp8_gemm_1d2d(a.first, sfa, b.first, sfb, c, d, m, n, k, major_a, major_b, compiled_dims);
+            sm90_fp8_gemm_1d2d(a.first, sfa, b.first, sfb, c, d, m, n, k, major_a, major_b, compiled_dims, std::nullopt, max_block_n, enable_overlap, signal);
         }
     } else if (arch_major == 10 and sfa.scalar_type() == torch::kInt) {
         sm100_fp8_gemm_1d1d(a.first, sfa, b.first, sfb, c, d, m, n, k, major_a, major_b, compiled_dims);

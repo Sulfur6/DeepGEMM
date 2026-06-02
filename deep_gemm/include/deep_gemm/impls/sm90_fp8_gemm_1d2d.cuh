@@ -404,7 +404,11 @@ sm90_fp8_gemm_1d2d_impl(float* sfb, int* grouped_layout, int *signal,
                 cutlass::arch::NamedBarrier(kNumMathThreads).sync();
 
                 if (threadIdx.x == 0) {
-                    atomic_add_release_global(signal + scheduler.current_group_idx * ceil_div(shape_m, BLOCK_M) + m_block_idx, 1);
+                    if constexpr (kGemmType == GemmType::Normal) {
+                        signal[m_block_idx * ceil_div(shape_n, BLOCK_N) + n_block_idx] = 1;
+                    } else if constexpr (kGemmType == GemmType::MGroupedMasked) {
+                        atomic_add_release_global(signal + scheduler.current_group_idx * ceil_div(shape_m, BLOCK_M) + m_block_idx, 1);
+                    }
                 }
             }
         }

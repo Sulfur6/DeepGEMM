@@ -113,8 +113,8 @@ torch::Tensor get_k_grouped_mn_major_tma_aligned_packed_ue8m0_tensor_wrapper(con
 }
 
 // GEMM wrappers
-void fp8_gemm_nt_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, const c10::optional<torch::Tensor>& c, const c10::optional<c10::IntArrayRef>& recipe, const std::string& compiled_dims, bool disable_ue8m0_cast) {
-    deep_gemm::gemm::fp8_gemm_nt({a_val, a_scale}, {b_val, b_scale}, d, c, to_recipe_tuple(recipe), compiled_dims, disable_ue8m0_cast);
+void fp8_gemm_nt_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, const c10::optional<torch::Tensor>& c, const c10::optional<c10::IntArrayRef>& recipe, const std::string& compiled_dims, bool disable_ue8m0_cast, int64_t max_block_n, bool enable_overlap, const c10::optional<torch::Tensor>& signal) {
+    deep_gemm::gemm::fp8_gemm_nt({a_val, a_scale}, {b_val, b_scale}, d, c, to_recipe_tuple(recipe), compiled_dims, disable_ue8m0_cast, max_block_n, enable_overlap, signal);
 }
 
 void fp8_gemm_nn_wrapper(const torch::Tensor& a_val, const torch::Tensor& a_scale, const torch::Tensor& b_val, const torch::Tensor& b_scale, const torch::Tensor& d, const c10::optional<torch::Tensor>& c, const c10::optional<c10::IntArrayRef>& recipe, const std::string& compiled_dims, bool disable_ue8m0_cast) {
@@ -278,16 +278,19 @@ TORCH_LIBRARY(deep_gemm, m) {
     });
 
     // gemm APIs (explicit schema + impl)
-    m.def(R"(fp8_gemm_nt(Any a, Any b, Tensor d, Tensor? c=None, int[]? recipe=None, str compiled_dims="nk", bool disable_ue8m0_cast=False) -> ())");
+    m.def(R"(fp8_gemm_nt(Any a, Any b, Tensor d, Tensor? c=None, int[]? recipe=None, str compiled_dims="nk", bool disable_ue8m0_cast=False, int max_block_n=256, bool enable_overlap=False, Tensor? signal=None) -> ())");
     m.impl("fp8_gemm_nt", torch::kCUDA, [](const c10::IValue& a_input, const c10::IValue& b_input,
                                             const torch::Tensor& d,
                                             const c10::optional<torch::Tensor>& c,
                                             const c10::optional<c10::IntArrayRef>& recipe,
                                             const std::string& compiled_dims,
-                                            bool disable_ue8m0_cast) {
+                                            bool disable_ue8m0_cast,
+                                            int64_t max_block_n,
+                                            bool enable_overlap,
+                                            const c10::optional<torch::Tensor>& signal) {
         auto [a_val, a_scale] = parse_tensor_or_tuple(a_input);
         auto [b_val, b_scale] = parse_tensor_or_tuple(b_input);
-        deep_gemm_wrappers::fp8_gemm_nt_wrapper(a_val, a_scale, b_val, b_scale, d, c, recipe, compiled_dims, disable_ue8m0_cast);
+        deep_gemm_wrappers::fp8_gemm_nt_wrapper(a_val, a_scale, b_val, b_scale, d, c, recipe, compiled_dims, disable_ue8m0_cast, max_block_n, enable_overlap, signal);
     });
 
     m.def(R"(fp8_gemm_nn(Any a, Any b, Tensor d, Tensor? c=None, int[]? recipe=None, str compiled_dims="nk", bool disable_ue8m0_cast=False) -> ())");

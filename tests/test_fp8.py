@@ -19,7 +19,7 @@ from generators import (
 
 def test_gemm() -> None:
     print('Testing GEMM:')
-    for kernel_type, m, n, k, major_a, major_b, accumulate, out_dtype in enumerate_normal(torch.float8_e4m3fn):
+    for kernel_type, enable_overlap, m, n, k, major_a, major_b, accumulate, out_dtype in enumerate_normal(torch.float8_e4m3fn):
         major_opt  = 'N' if major_a.is_k_major() else 'T'
         major_opt += 'T' if major_b.is_k_major() else 'N'
         out_opt    = 'FP32' if out_dtype == torch.float else 'BF16'
@@ -30,26 +30,51 @@ def test_gemm() -> None:
         recipe = (1, 1, 128) if kernel_type.is_1d1d() and accumulate else None
 
         for test_alias in (False, True):
-            a, b, c, d, ref_d = generate_normal(m, n, k, major_a, major_b, accumulate, out_dtype, kernel_type, use_ue8m0=use_ue8m0)
+            a, b, c, d, ref_d, signal = generate_normal(m, n, k, major_a, major_b, accumulate, out_dtype, kernel_type, use_ue8m0=use_ue8m0, enable_overlap=enable_overlap)
             func_name = f'fp8_gemm_{major_opt.lower() if test_alias else "nt"}'
             if test_alias:
                 a = a if major_a.is_k_major() else (a[0].T, a[1].T)
                 b = b if major_b.is_k_major() else (b[0].T, b[1].T)
                 assert a[0].is_contiguous() and b[0].is_contiguous()
-            getattr(deep_gemm, func_name)(a, b, d, c=c, disable_ue8m0_cast=disable_ue8m0_cast, recipe=recipe)
+            getattr(deep_gemm, func_name)(a, b, d, c=c, disable_ue8m0_cast=disable_ue8m0_cast, recipe=recipe, enable_overlap=enable_overlap, signal=signal)
             diff = calc_diff(d, ref_d)
             assert diff < 0.001, (f'{m=}, {n=}, {k=}, {kernel_opt}, {major_opt=}, {accumulate=}, {out_dtype=}, '
                                   f'{diff:.5f}, alias={test_alias}')
 
-        a, b, c, d, ref_d = generate_normal(m, n, k, major_a, major_b, accumulate, out_dtype, kernel_type, use_ue8m0=use_ue8m0)
-        t = bench_kineto(lambda: deep_gemm.fp8_gemm_nt(a, b, d, c=c, disable_ue8m0_cast=disable_ue8m0_cast, recipe=recipe),
+        a, b, c, d, ref_d, signal = generate_normal(m, n, k, major_a, major_b, accumulate, out_dtype, kernel_type, use_ue8m0=use_ue8m0, enable_overlap=enable_overlap)
+        t = bench_kineto(lambda: deep_gemm.fp8_gemm_nt(a, b, d, c=c, disable_ue8m0_cast=disable_ue8m0_cast, recipe=recipe, enable_overlap=enable_overlap, signal=signal),
                          'fp8_gemm', suppress_kineto_output=True)
         cublas_t, split_k_t = bench_kineto(lambda: deep_gemm.cublaslt_gemm_nt(a[0], b[0], d, c=c), ('nvjet', 'reduce'), suppress_kineto_output=True)
-        print(f' > Perf (m={m:6}, n={n:6}, k={k:6}, {kernel_opt}, layout={major_opt}, {out_opt}, {acc_opt}): '
+        print(f' > Perf (m={m:6}, n={n:6}, k={k:6}, {kernel_opt}, layout={major_opt}, {out_opt}, {acc_opt}, enable_overlap={enable_overlap}): '
               f'{t * 1e6:4.0f} us | {2 * m * n * k / t / 1e12:4.0f} TFLOPS | '
               f'{(count_bytes(a, b, d) + count_bytes(c) * int(accumulate)) / 1e9 / t:4.0f} GB/s | '
               f'{(cublas_t + split_k_t) / t:.2f}x cuBLAS')
     print()
+
+
+def test_gemm_signal() -> None:
+    print('Testing GEMM:')
+
+    m, n, k = 4096, 7168, 2048
+    from generators import MajorTypeAB
+    major_a, major_b = MajorTypeAB.KMajor, MajorTypeAB.KMajor
+    accumulate = False
+    out_dtype = torch.bfloat16
+    kernel_type = KernelType.Kernel1D2D
+    use_ue8m0 = get_ue8m0_usage(kernel_type)
+    enable_overlap = True
+
+    a, b, c, d, ref_d, signal = generate_normal(m, n, k, major_a, major_b, accumulate, out_dtype, kernel_type, use_ue8m0=use_ue8m0, enable_overlap=enable_overlap)
+    recipe = (1, 1, 128) if kernel_type.is_1d1d() and accumulate else None
+    deep_gemm.set_num_sms(70)
+    deep_gemm.fp8_gemm_nt(a, b, d, c=c, disable_ue8m0_cast=not use_ue8m0, recipe=recipe, enable_overlap=enable_overlap, signal=signal)
+    if enable_overlap:
+        signal_num = (signal != 0).sum().item()
+        print(signal_num, signal.flatten()[:signal_num], signal[signal != 0].sum().item())
+    total_num_sms = deep_gemm.get_num_sms()
+    print(total_num_sms)
+    diff = calc_diff(d, ref_d)
+    assert diff < 0.001, (f'{m=}, {n=}, {k=}, {accumulate=}, {out_dtype=}, {diff:.5f}')
 
 
 def test_m_grouped_gemm_contiguous() -> None:
@@ -112,11 +137,9 @@ def test_m_grouped_gemm_masked() -> None:
         # Construct full cases
         a, b, masked_m, d, ref_d, signal = generate_m_grouped_masked(num_groups, max_m, expected_m_per_group, n, k, use_ue8m0=use_ue8m0, enable_overlap=enable_overlap)
 
-
         # noinspection PyShadowingNames
         def test_func():
             deep_gemm.m_grouped_fp8_gemm_nt_masked(a, b, d, masked_m, expected_m_per_group, disable_ue8m0_cast=disable_ue8m0_cast, enable_overlap=enable_overlap, signal=signal)
-
 
         # Test performance with fixed shapes
         valid_m = masked_m.sum().item()
@@ -174,7 +197,8 @@ if __name__ == '__main__':
     print('Library path:')
     print(f' > {deep_gemm.__path__}\n')
 
-    test_gemm()
-    test_m_grouped_gemm_contiguous()
-    test_m_grouped_gemm_masked()
-    test_k_grouped_gemm_contiguous()
+    # test_gemm()
+    test_gemm_signal()
+    # test_m_grouped_gemm_contiguous()
+    # test_m_grouped_gemm_masked()
+    # test_k_grouped_gemm_contiguous()

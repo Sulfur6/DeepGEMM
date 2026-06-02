@@ -84,7 +84,9 @@ def enumerate_normal(dtype: torch.dtype) -> Generator:
         for m in m_fwd_list:
             for n, k in nk_list:
                 out_dtype = torch.float if (n, k) in fp32_output_nk else torch.bfloat16
-                yield kernel_type, m, n, k, MajorTypeAB.KMajor, MajorTypeAB.KMajor, False, out_dtype
+                # enable_overlap only true for 1D2D with NT layout (KMajor, KMajor)
+                for enable_overlap in (False, True) if kernel_type.is_1d2d() else (False,):
+                    yield kernel_type, enable_overlap, m, n, k, MajorTypeAB.KMajor, MajorTypeAB.KMajor, False, out_dtype
 
         # TODO: support BF16 SM90 MN-major kernels
         if dtype == torch.bfloat16 and get_arch_major() == 9:
@@ -98,9 +100,12 @@ def enumerate_normal(dtype: torch.dtype) -> Generator:
                 if get_arch_major() == 9 and dtype == torch.float8_e4m3fn:
                     override_major = MajorTypeAB.KMajor
                     override_kernel_type = KernelType.Kernel1D1D
-                yield kernel_type,          m, k, n, MajorTypeAB.KMajor, override_major, False, torch.bfloat16     # Dgrad
-                yield override_kernel_type, n, m, k, override_major,     override_major, True,  torch.float        # Wgrad
-                yield override_kernel_type, n, m, k, override_major,     override_major, False, torch.bfloat16     # Wgrad
+                # enable_overlap only for 1D2D + NT (KMajor, KMajor)
+                for enable_overlap in (False, True) if (kernel_type.is_1d2d() and override_major.is_k_major()) else (False,):
+                    yield kernel_type, enable_overlap,          m, k, n, MajorTypeAB.KMajor, override_major, False, torch.bfloat16     # Dgrad
+                for enable_overlap in (False, True) if (override_kernel_type.is_1d2d() and override_major.is_k_major()) else (False,):
+                    yield override_kernel_type, enable_overlap, n, m, k, override_major,     override_major, True,  torch.float        # Wgrad
+                    yield override_kernel_type, enable_overlap, n, m, k, override_major,     override_major, False, torch.bfloat16     # Wgrad
 
 
 def enumerate_m_grouped_contiguous(dtype: torch.dtype) -> Generator:
@@ -160,7 +165,8 @@ def generate_normal(m: int, n: int, k: int,
                     major_a: MajorTypeAB, major_b: MajorTypeAB,
                     accumulate: bool, out_dtype: torch.dtype,
                     kernel_type: KernelType,
-                    use_ue8m0: bool = False, use_bf16: bool = False):
+                    use_ue8m0: bool = False, use_bf16: bool = False,
+                    enable_overlap: bool = False):
     a = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
     b = torch.randn((n, k), device='cuda', dtype=torch.bfloat16)
     d = torch.randn((m, n), device='cuda', dtype=out_dtype) * 32 if accumulate else \
@@ -178,7 +184,12 @@ def generate_normal(m: int, n: int, k: int,
             else per_block_cast_to_fp8(b, use_ue8m0=use_ue8m0)
     a_fp8 = a_fp8 if major_a.is_k_major() else (a_fp8[0].T.contiguous().T, a_fp8[1])
     b_fp8 = b_fp8 if major_b.is_k_major() else (b_fp8[0].T.contiguous().T, b_fp8[1])
-    return a_fp8, b_fp8, c, d, ref_d
+
+    world_size, min_block_size_m, min_block_size_n = 1, 16, 16
+    max_signal_size = world_size * ceil_div(m, min_block_size_m) * ceil_div(n, min_block_size_n)
+    signal = torch.zeros(max_signal_size, dtype=torch.int32, device='cuda') if enable_overlap else None
+
+    return a_fp8, b_fp8, c, d, ref_d, signal
 
 
 def generate_m_grouped_contiguous(num_groups: int, expected_m_per_group: int, n: int, k: int,

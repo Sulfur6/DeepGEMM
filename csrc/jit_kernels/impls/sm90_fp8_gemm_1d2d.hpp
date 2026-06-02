@@ -79,7 +79,10 @@ static void sm90_fp8_gemm_1d2d(const torch::Tensor& a, const torch::Tensor& sfa,
                                const int& m, const int& n, const int& k,
                                const cute::UMMA::Major& major_a, const cute::UMMA::Major& major_b,
                                const std::string& compiled_dims,
-                               const std::optional<std::string>& epilogue_type = std::nullopt) {
+                               const std::optional<std::string>& epilogue_type = std::nullopt,
+                               const int& max_block_n = 256,
+                               const bool& enable_overlap = false,
+                               const c10::optional<torch::Tensor>& signal = std::nullopt) {
     DG_HOST_ASSERT(not c.has_value() and d.scalar_type() == torch::kBFloat16);
     DG_HOST_ASSERT(major_a == cute::UMMA::Major::K and major_b == cute::UMMA::Major::K);
 
@@ -88,7 +91,7 @@ static void sm90_fp8_gemm_1d2d(const torch::Tensor& a, const torch::Tensor& sfa,
         GemmType::Normal, KernelType::Kernel1D2D,
         m, n, k, 1, major_a, major_b,
         torch::kFloat8_e4m3fn, d.scalar_type(), c.has_value(),
-        device_runtime->get_num_sms());
+        device_runtime->get_num_sms(), max_block_n, enable_overlap);
 
     // Requires no TMA splits
     DG_HOST_ASSERT(config.smem_config.swizzle_a_mode == config.block_k);
@@ -123,7 +126,7 @@ static void sm90_fp8_gemm_1d2d(const torch::Tensor& a, const torch::Tensor& sfa,
                                   config.multicast_config.num_multicast),
         .sfb = sfb.data_ptr(),
         .grouped_layout = nullptr,
-        .signal = nullptr,
+        .signal = enable_overlap ? signal.value().data_ptr() : nullptr,
         .tensor_map_a = tensor_map_a,
         .tensor_map_b = tensor_map_b,
         .tensor_map_d = tensor_map_d,
